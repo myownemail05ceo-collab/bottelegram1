@@ -44,23 +44,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def _resolve_bot_token() -> str:
-    """Resolve BOT_TOKEN com fallbacks pro Railway."""
-    import os
-    # Railway injeta via ENV direto — leia ANTES de dotenv
-    token = os.environ.get("BOT_TOKEN", "")
-    # Limpa espaços/newlines que podem vir acidentalmente
-    token = token.strip()
-    logger.info(f"[DEBUG] BOT_TOKEN len={len(token)}, prefix={token[:5] + '...' if len(token) >= 5 else '(vazio)'}")
-    if not token or token == "PLACEHOLDER" or len(token) < 20:
-        logger.warning("BOT_TOKEN ausente ou inválido nos envs — bot não iniciará até o token ser definido")
-        return ""
-    return token
-
-
-_bot_token = _resolve_bot_token()
-bot = Bot(token=_bot_token) if _bot_token else None
 dp = Dispatcher()
+bot = None  # Inicializado no on_startup() — Railway só injeta env vars DEPOIS do import
 scheduler = AsyncIOScheduler()
 
 stripe.api_key = STRIPE_SECRET_KEY
@@ -946,32 +931,38 @@ async def cleanup_expired():
 # ─── Startup / Shutdown ──────────────────────────────────────────────
 
 async def on_startup():
+    global bot
+
     await db.init_db()
     logger.info("Banco inicializado")
 
-    if not bot:
-        logger.error("=" * 60)
-        logger.error("BOT_TOKEN não está definido! O bot não vai responder.")
-        logger.error("Verifique a variável de ambiente BOT_TOKEN no Railway.")
-        logger.error("")
-        logger.error("Todas as variáveis disponíveis no ambiente:")
-        for key in sorted(os.environ.keys()):
-            val = os.environ[key]
-            display = val[:5] + "..." if len(val) > 5 else val
-            logger.error(f"  {key}='{display}'")
-        logger.error("=" * 60)
-        return
+    # Cria o bot aqui — Railway só injeta env vars DEPOIS do module import
+    token = os.environ.get("BOT_TOKEN", "").strip()
+    logger.info(f"[startup] BOT_TOKEN len={len(token)}, prefix={token[:6] + '...' if len(token) >= 6 else '(vazio)'}")
 
-    # Pega o username do bot
-    bot_info = await bot.get_me()
-    import config
-    config.BOT_USERNAME = bot_info.username
-    logger.info(f"Bot logado como @{bot_info.username}")
+    if not bot and token and len(token) > 20 and token != "PLACEHOLDER":
+        bot = Bot(token=token)
+    elif not token:
+        logger.error("=" * 60)
+        logger.error("BOT_TOKEN ausente no container. O bot não vai responder a mensagens.")
+        logger.error("O webhook do Stripe ainda funciona para receber pagamentos.")
+        logger.error("=" * 60)
+    elif not bot:
+        # já foi criado em algum outro ponto, ou token inválido
+        pass
+
+    if bot:
+        bot_info = await bot.get_me()
+        import config
+        config.BOT_USERNAME = bot_info.username
+        logger.info(f"Bot logado como @{bot_info.username}")
+    else:
+        logger.warning("Bot não inicializado — sem token válido")
+        return
 
     scheduler.start()
     scheduler.add_job(cleanup_expired, "interval", hours=6)
 
-    # aiohttp (webhook do Stripe)
     app = build_app()
     runner = web.AppRunner(app)
     await runner.setup()
