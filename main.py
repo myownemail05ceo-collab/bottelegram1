@@ -949,10 +949,24 @@ async def on_startup():
     await db.init_db()
     logger.info("Banco inicializado")
 
+    if not bot:
+        logger.error("=" * 60)
+        logger.error("BOT_TOKEN não está definido! O bot não vai responder.")
+        logger.error("Verifique a variável de ambiente BOT_TOKEN no Railway.")
+        logger.error("")
+        logger.error("Todas as variáveis disponíveis no ambiente:")
+        for key in sorted(os.environ.keys()):
+            val = os.environ[key]
+            display = val[:5] + "..." if len(val) > 5 else val
+            logger.error(f"  {key}='{display}'")
+        logger.error("=" * 60)
+        return
+
     # Pega o username do bot
     bot_info = await bot.get_me()
     import config
     config.BOT_USERNAME = bot_info.username
+    logger.info(f"Bot logado como @{bot_info.username}")
 
     scheduler.start()
     scheduler.add_job(cleanup_expired, "interval", hours=6)
@@ -969,7 +983,8 @@ async def on_startup():
 
 async def on_shutdown():
     scheduler.shutdown()
-    await bot.session.close()
+    if bot:
+        await bot.session.close()
 
 
 # ─── Main ─────────────────────────────────────────────────────────────
@@ -977,8 +992,20 @@ async def on_shutdown():
 def main():
     dp.startup.register(on_startup)
     dp.shutdown.register(on_shutdown)
-    logger.info("Bot multi-tenant iniciado (polling mode)")
-    dp.run_polling(bot)
+    if bot:
+        logger.info("Bot multi-tenant iniciado (polling mode)")
+        dp.run_polling(bot)
+    else:
+        logger.info("Servidor webhook rodando sem polling (BOT_TOKEN ausente)")
+        # Roda só o webhook server
+        import asyncio
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(on_startup())
+        try:
+            loop.run_forever()
+        except KeyboardInterrupt:
+            loop.run_until_complete(on_shutdown())
 
 
 if __name__ == "__main__":
