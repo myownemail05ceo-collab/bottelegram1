@@ -936,8 +936,35 @@ async def on_startup():
     await db.init_db()
     logger.info("Banco inicializado")
 
-    # Cria o bot aqui — Railway só injeta env vars DEPOIS do module import
-    token = os.environ.get("BOT_TOKEN", "").strip()
+    # Railway Runtime v2 pode injetar env vars de forma diferente.
+    # tenta múltiplos métodos de leitura
+    def _read_env(key: str) -> str:
+        # 1. Env var padrão
+        val = os.environ.get(key, "")
+        if val:
+            return val.strip()
+        # 2. Fallback: le /proc/1/environ (ambiente do container)
+        try:
+            with open("/proc/1/environ", "rb") as f:
+                data = f.read().decode("utf-8", errors="ignore")
+                for entry in data.split("\x00"):
+                    if entry.startswith(f"{key}="):
+                        return entry.split("=", 1)[1].strip()
+        except Exception:
+            pass
+        # 3. Fallback: arquivo .env no filesystem
+        try:
+            env_path = os.path.join(os.path.dirname(__file__), ".env.production")
+            with open(env_path) as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith(f"{key}="):
+                        return line.split("=", 1)[1].strip().strip("\"'")
+        except Exception:
+            pass
+        return ""
+
+    token = _read_env("BOT_TOKEN")
     logger.info(f"[startup] BOT_TOKEN len={len(token)}, prefix={token[:6] + '...' if len(token) >= 6 else '(vazio)'}")
 
     if not bot and token and len(token) > 20 and token != "PLACEHOLDER":
