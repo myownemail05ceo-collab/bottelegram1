@@ -43,7 +43,23 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-bot = Bot(token=BOT_TOKEN)
+
+def _resolve_bot_token() -> str:
+    """Resolve BOT_TOKEN com fallbacks pro Railway."""
+    import os
+    # Railway injeta via ENV direto — leia ANTES de dotenv
+    token = os.environ.get("BOT_TOKEN", "")
+    # Limpa espaços/newlines que podem vir acidentalmente
+    token = token.strip()
+    logger.info(f"[DEBUG] BOT_TOKEN len={len(token)}, prefix={token[:5] + '...' if len(token) >= 5 else '(vazio)'}")
+    if not token or token == "PLACEHOLDER" or len(token) < 20:
+        logger.warning("BOT_TOKEN ausente ou inválido nos envs — bot não iniciará até o token ser definido")
+        return ""
+    return token
+
+
+_bot_token = _resolve_bot_token()
+bot = Bot(token=_bot_token) if _bot_token else None
 dp = Dispatcher()
 scheduler = AsyncIOScheduler()
 

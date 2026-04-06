@@ -1,7 +1,9 @@
 import os
 from dotenv import load_dotenv
 
-load_dotenv()
+# Só carrega .env se tiver num ambiente local (não no Railway/Render)
+if os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")):
+    load_dotenv()
 
 # Telegram
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
