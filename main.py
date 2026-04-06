@@ -159,32 +159,64 @@ async def cmd_start(message: types.Message):
         channel_id = parts[1].replace("cid_", "")
         return await _show_channel_plans(message, channel_id)
 
-    # Padrão: mostra mensagem genérica
-    text = (
-        "\U0001f916 Olá! Eu gerencio assinaturas para canais pagos no Telegram.\n\n"
-        "\U0001f4e3 Se você recebeu um link de um canal, clique nele para ver os planos.\n\n"
-        "\U0001f527 Quer vender acesso ao seu canal? Digite /register para começar!"
-    )
-    await message.answer(text)
+    # Default: mostra catálogo de todos os canais ativos
+    all_channels = await db.list_all_channels()
+    active_channels = [ch for ch in all_channels if ch["is_active"]]
+
+    if active_channels:
+        # Mostra os canais disponíveis
+        kb_rows = []
+        for ch in active_channels[:15]:  # Limita a 15 pra caber no inline keyboard
+            plan_count = len(await db.get_plans_by_channel(ch["channel_id"]))
+            subscriber_count = await db.count_active_subscribers(ch["channel_id"])
+            label = f"{ch['channel_title'] or ch['channel_id']}"
+            sub_info = f" ({subscriber_count} sub{'s' if subscriber_count != 1 else ''})"
+            kb_rows.append([
+                InlineKeyboardButton(
+                    text=f"\U0001f512 {label}{sub_info}",
+                    callback_data=f"cat_{ch['channel_id']}"
+                )
+            ])
+
+        text = (
+            f"\U0001f916 *Alfe — Assinaturas*\n\n"
+            f"Bem-vindo(a)! Escolha um canal abaixo para ver os planos disponíveis:\n\n"
+            f"_📊 {len(active_channels)} canal(is) disponíve(is)_"
+        )
+        await message.answer(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows))
+    else:
+        text = (
+            "\U0001f916 Olá! Eu gerencio assinaturas para canais pagos no Telegram.\n\n"
+            "\U0001f527 Quer vender acesso ao seu canal? Digite /register para começar!\n\n"
+            "Os canais cadastrados aparecerão aqui em breve."
+        )
+        await message.answer(text)
 
 
-async def _show_channel_plans(message: types.Message, channel_id: str):
+async def _show_channel_plans(target: types.Message | types.CallbackQuery, channel_id: str):
     """Mostra os planos disponíveis de um canal."""
-    uid = message.from_user.id
+    if isinstance(target, types.CallbackQuery):
+        uid = target.from_user.id
+        msg = target.message
+        reply_func = msg.edit_text
+    else:
+        uid = target.from_user.id
+        msg = target
+        reply_func = msg.answer
     channel = await db.get_channel(channel_id)
 
     if not channel or not channel["is_active"]:
-        return await message.answer("\u274c Este canal não está mais disponível.")
+        return await reply_func("\U0001f4e2 Este canal não está mais disponível.")
 
     plans = await db.get_plans_by_channel(channel_id)
     if not plans:
-        return await message.answer(f"\u26a0\ufe0f O canal *{channel['channel_title']}* ainda não configurou planos de assinatura.")
+        return await reply_func(f"\u26a0\ufe0f O canal *{channel['channel_title']}* ainda não configurou planos de assinatura.")
 
     # Checa se já é assinante
     sub = await db.get_subscriber(channel_id, uid)
     if sub and sub["status"] == "active":
         expires = datetime.fromisoformat(sub["expires_at"]) if sub["expires_at"] else None
-        return await message.answer(
+        return await reply_func(
             f"\u2705 Você já é assinante do *{channel['channel_title']}*!\n"
             f"Expira em: {expires.strftime('%d/%m/%Y') if expires else 'Nunca'}"
         )
@@ -206,7 +238,7 @@ async def _show_channel_plans(message: types.Message, channel_id: str):
             )
         ])
 
-    await message.answer(header, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows), parse_mode="Markdown")
+    await reply_func(header, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows), parse_mode="Markdown")
 
 
 @dp.callback_query(lambda c: c.data.startswith("buy_"))
@@ -248,6 +280,37 @@ async def cb_buy(callback: types.CallbackQuery):
     ])
 
     await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+
+
+@dp.message(Command("catalogo"))
+async def cmd_catalogo(message: types.Message):
+    """Mostra o catálogo completo de canais ativos."""
+    all_channels = await db.list_all_channels()
+    active_channels = [ch for ch in all_channels if ch["is_active"]]
+
+    if not active_channels:
+        return await message.answer("\U0001f4e2 Nenhum canal disponível no momento.")
+
+    kb_rows = []
+    for ch in active_channels[:20]:
+        sub_count = await db.count_active_subscribers(ch["channel_id"])
+        label = f"{ch['channel_title'] or ch['channel_id']}"
+        kb_rows.append([
+            InlineKeyboardButton(
+                text=f"\U0001f512 {label} ({sub_count})",
+                callback_data=f"cat_{ch['channel_id']}"
+            )
+        ])
+
+    text = f"\U0001f916 *Catálogo de Canais*\n\nEscolha um canal para ver os planos:\n_📊 {len(active_channels)} canal(is) ativo(s)_"
+    await message.answer(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows))
+
+
+@dp.callback_query(lambda c: c.data.startswith("cat_"))
+async def cb_catalog(callback: types.CallbackQuery):
+    """Usuário clicou num canal no catálogo."""
+    channel_id = callback.data.replace("cat_", "")
+    await _show_channel_plans(callback.message, channel_id)
 
 
 @dp.message(Command("subscribe"))
@@ -522,7 +585,10 @@ async def cb_admin_toggle(callback: types.CallbackQuery):
     ch = await db.get_channel(channel_id)
 
     new_status = 0 if ch["is_active"] else 1
-    await db.execute(f"UPDATE channels SET is_active = {new_status} WHERE channel_id = ?", (str(channel_id),))
+    await db.execute(
+        f"UPDATE channels SET is_active = {new_status} WHERE channel_id = ?",
+        (str(channel_id),),
+    )
     await callback.answer("Status alterado!", show_alert=False)
 
 
